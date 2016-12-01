@@ -1,8 +1,10 @@
 'use strict';
 const express = require('express');
-const basicAuth = require('basic-auth');
 const path = require('path');
 const packageJson = require('package-json');
+const csrf = require('csurf');
+const Authentication = require('./Authentication.js');
+var fs = require('fs');
 
 const currentVersionFeatures = require('../package.json').parseDashboardFeatures;
 
@@ -26,10 +28,50 @@ function getMount(req) {
   return mountPath;
 }
 
+function checkIfIconsExistForApps(apps, iconsFolder) {
+  for (var i in apps) {
+    var currentApp = apps[i];
+    var iconName = currentApp.iconName;
+    var path = iconsFolder + "/" + iconName;
+
+    fs.stat(path, function(err, stat) {
+      if (err) {
+          if ('ENOENT' == err.code) {// file does not exist
+              console.warn("Icon with file name: " + iconName +" couldn't be found in icons folder!");
+          } else {
+            console.log(
+              'An error occurd while checking for icons, please check permission!');
+          }
+      } else {
+          //every thing was ok so for example you can read it and send it to client
+      }
+  } );
+  }
+}
+
 module.exports = function(config, allowInsecureHTTP) {
   var app = express();
   // Serve public files.
   app.use(express.static(path.join(__dirname,'public')));
+
+  // Allow setting via middleware
+  if (config.trustProxy && app.disabled('trust proxy')) {
+    app.enable('trust proxy');
+  }
+
+  const users = config.users;
+  const useEncryptedPasswords = config.useEncryptedPasswords ? true : false;
+  const authInstance = new Authentication(users, useEncryptedPasswords);
+  authInstance.initialize(app);
+
+  // CSRF error handler 
+  app.use(function (err, req, res, next) {
+    if (err.code !== 'EBADCSRFTOKEN') return next(err)
+
+    // handle CSRF token errors here 
+    res.status(403)
+    res.send('form tampered with')
+  });
 
   // Serve the configuration.
   app.get('/parse-dashboard-config.json', function(req, res) {
@@ -37,14 +79,6 @@ module.exports = function(config, allowInsecureHTTP) {
       apps: config.apps,
       newFeaturesInLatestVersion: newFeaturesInLatestVersion,
     };
-
-    const users = config.users;
-
-    let auth = null;
-    //If they provide auth when their config has no users, ignore the auth
-    if (users) {
-      auth = basicAuth(req);
-    }
 
     //Based on advice from Doug Wilson here:
     //https://github.com/expressjs/express/issues/2518
@@ -62,27 +96,13 @@ module.exports = function(config, allowInsecureHTTP) {
       return res.send({ success: false, error: 'Configure a user to access Parse Dashboard remotely' });
     }
 
-    let appsUserHasAccess = null;
+    const authentication = req.user;
 
-    const successfulAuth =
-      //they provided auth
-      auth &&
-      //there are configured users
-      users &&
-      //the provided auth matches one of the users
-       users.find(user => {
-        let isAuthorized = user.user == auth.name &&
-                            user.pass == auth.pass
-        if (isAuthorized) {
-          // User restricted apps
-          appsUserHasAccess = user.apps
-        }
-
-        return isAuthorized
-      });
+    const successfulAuth = authentication && authentication.isAuthenticated;
+    const appsUserHasAccess = authentication && authentication.appsUserHasAccessTo;
 
     if (successfulAuth) {
-      if(appsUserHasAccess) {
+      if (appsUserHasAccess) {
         // Restric access to apps defined in user dictionary
         // If they didn't supply any app id, user will access all apps
         response.apps = response.apps.filter(function (app) {
@@ -95,9 +115,8 @@ module.exports = function(config, allowInsecureHTTP) {
       return res.json(response);
     }
 
-    if (users || auth) {
+    if (users) {
       //They provided incorrect auth
-      res.set('WWW-Authenticate', 'Basic realm=Authorization Required');
       return res.sendStatus(401);
     }
 
@@ -116,11 +135,56 @@ module.exports = function(config, allowInsecureHTTP) {
   // We are explicitly not using `__dirpath` here because one may be
   // running parse-dashboard from globally installed npm.
   if (config.iconsFolder) {
-    app.use('/appicons', express.static(config.iconsFolder));
+    try {
+      var stat = fs.statSync(config.iconsFolder);
+      if (stat.isDirectory()) {
+        app.use('/appicons', express.static(config.iconsFolder));
+        //Check also if the icons really exist
+        checkIfIconsExistForApps(config.apps, config.iconsFolder);
+      }
+    } catch (e) {
+      // Directory doesn't exist or something.
+      console.warn("Iconsfolder at path: " + config.iconsFolder +
+        " not found!");
+    }
   }
+
+  app.get('/login', csrf(), function(req, res) {
+    if (!users || (req.user && req.user.isAuthenticated)) {
+      return res.redirect('/apps');
+    }
+    let mountPath = getMount(req);
+    let errors = req.flash('error');
+    if (errors && errors.length) {
+      errors = `<div id="login_errors" style="display: none;">
+        ${errors.join(' ')}
+      </div>`
+    }
+    res.send(`<!DOCTYPE html>
+      <head>
+        <link rel="shortcut icon" type="image/x-icon" href="${mountPath}favicon.ico" />
+        <base href="${mountPath}"/>
+        <script>
+          PARSE_DASHBOARD_PATH = "${mountPath}";
+        </script>
+      </head>
+      <html>
+        <title>Parse Dashboard</title>
+        <body>
+          <div id="login_mount"></div>
+          ${errors}
+          <script id="csrf" type="application/json">"${req.csrfToken()}"</script>
+          <script src="${mountPath}bundles/login.bundle.js"></script>
+        </body>
+      </html>
+    `);
+  });
 
   // For every other request, go to index.html. Let client-side handle the rest.
   app.get('/*', function(req, res) {
+    if (users && (!req.user || !req.user.isAuthenticated)) {
+      return res.redirect('/login');
+    }
     let mountPath = getMount(req);
     res.send(`<!DOCTYPE html>
       <head>

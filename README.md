@@ -10,6 +10,7 @@ Parse Dashboard is a standalone dashboard for managing your Parse apps. You can 
   * [Configuring Parse Dashboard](#configuring-parse-dashboard)
   * [Managing Multiple Apps](#managing-multiple-apps)
   * [Other Configuration Options](#other-configuration-options)
+* [Running as Express Middleware](#running-as-express-middleware)
 * [Deploying Parse Dashboard](#deploying-parse-dashboard)
   * [Preparing for Deployment](#preparing-for-deployment)
   * [Security Considerations](#security-considerations)
@@ -20,7 +21,7 @@ Parse Dashboard is a standalone dashboard for managing your Parse apps. You can 
 
 # Getting Started
 
-[Node.js](https://nodejs.org) version >= 4.3 is required to run the dashboard. You also need to be using Parse Server version 2.1.4 or higher. 
+[Node.js](https://nodejs.org) version >= 4.3 is required to run the dashboard. You also need to be using Parse Server version 2.1.4 or higher.
 
 # Local Installation
 
@@ -43,6 +44,9 @@ After starting the dashboard, you can visit http://localhost:4040 in your browse
 ![Parse Dashboard](.github/dash-shot.png)
 
 ## Configuring Parse Dashboard
+
+### File
+
 You can also start the dashboard from the command line with a config file.  To do this, create a new file called `parse-dashboard-config.json` inside your local Parse Dashboard directory hierarchy.  The file should match the following format:
 
 ```json
@@ -60,13 +64,43 @@ You can also start the dashboard from the command line with a config file.  To d
 
 You can then start the dashboard using `parse-dashboard --config parse-dashboard-config.json`.
 
+### Environment variables
+
+> This only works when starting the app using the `parse-dashboard` command
+
+There are also two methods you can use to configure the dashboard using environment variables.
+
+#### Multiple apps
+
+Provide the entire JSON configuration in `PARSE_DASHBOARD_CONFIG` and it will be parsed just like the config file.
+
+#### Single app
+
+You can also define each configuration option individually.
+
+```
+HOST: "0.0.0.0"
+PORT: "4040"
+MOUNT_PATH: "/"
+PARSE_DASHBOARD_TRUST_PROXY: undefined // Or "1" to trust connection info from a proxy's X-Forwarded-* headers
+PARSE_DASHBOARD_SERVER_URL: "http://localhost:1337/parse"
+PARSE_DASHBOARD_MASTER_KEY: "myMasterKey"
+PARSE_DASHBOARD_APP_ID: "myAppId"
+PARSE_DASHBOARD_APP_NAME: "MyApp"
+PARSE_DASHBOARD_USER_ID: "user1"
+PARSE_DASHBOARD_USER_PASSWORD: "pass"
+PARSE_DASHBOARD_SSL_KEY: "sslKey"
+PARSE_DASHBOARD_SSL_CERT: "sslCert"
+PARSE_DASHBOARD_CONFIG: undefined // Only for reference, it must not exist
+```
+
 ## Managing Multiple Apps
 
 Managing multiple apps from the same dashboard is also possible.  Simply add additional entries into the `parse-dashboard-config.json` file's `"apps"` array.
 
 You can manage self-hosted [Parse Server](https://github.com/ParsePlatform/parse-server) apps, *and* apps that are hosted on [Parse.com](http://parse.com/) from the same dashboard. In your config file, you will need to add the `restKey` and `javascriptKey` as well as the other paramaters, which you can find on `dashboard.parse.com`. Set the serverURL to `http://api.parse.com/1`:
 
-```json
+```js
 {
   "apps": [
     {
@@ -90,7 +124,7 @@ You can manage self-hosted [Parse Server](https://github.com/ParsePlatform/parse
 
 ## App Icon Configuration
 
-Parse Dashboard supports adding an optional icon for each app, so you can identify them easier in the list. To do so, you *must* use the configuration file, define an `iconsFolder` in it, and define the `iconName` parameter for each app (including the extension). The path of the `iconsFolder` is relative to the configuration file. To visualize what it means, in the following example `icons` is a directory located under the same directory as the configuration file:
+Parse Dashboard supports adding an optional icon for each app, so you can identify them easier in the list. To do so, you *must* use the configuration file, define an `iconsFolder` in it, and define the `iconName` parameter for each app (including the extension). The path of the `iconsFolder` is relative to the configuration file. If you have installed ParseDashboard globally you need to use the full path as value for the `iconsFolder`. To visualize what it means, in the following example `icons` is a directory located under the same directory as the configuration file:
 
 ```json
 {
@@ -109,9 +143,66 @@ Parse Dashboard supports adding an optional icon for each app, so you can identi
 
 ## Other Configuration Options
 
-You can set `appNameForURL` in the config file for each app to control the url of your app within the dashboard. This can make it easier to use bookmarks or share links on your dashboard. 
+You can set `appNameForURL` in the config file for each app to control the url of your app within the dashboard. This can make it easier to use bookmarks or share links on your dashboard.
 
 To change the app to production, simply set `production` to `true` in your config file. The default value is false if not specified.
+
+# Running as Express Middleware
+
+Instead of starting Parse Dashboard with the CLI, you can also run it as an [express](https://github.com/expressjs/express) middleware.
+
+```
+var express = require('express');
+var ParseDashboard = require('parse-dashboard');
+
+var dashboard = new ParseDashboard({
+  "apps": [
+    {
+      "serverURL": "http://localhost:1337/parse",
+      "appId": "myAppId",
+      "masterKey": "myMasterKey",
+      "appName": "MyApp"
+    }
+  ]
+});
+
+var app = express();
+
+// make the Parse Dashboard available at /dashboard
+app.use('/dashboard', dashboard);
+
+var httpServer = require('http').createServer(app);
+httpServer.listen(4040);
+```
+
+If you want to run both [Parse Server](https://github.com/ParsePlatform/parse-server) and Parse Dashboard on the same server/port, you can run them both as express middleware:
+
+```
+var express = require('express');
+var ParseServer = require('parse-server').ParseServer;
+var ParseDashboard = require('parse-dashboard');
+
+var allowInsecureHTTP = false
+
+var api = new ParseServer({
+	// Parse Server settings
+});
+
+var dashboard = new ParseDashboard({
+	// Parse Dashboard settings
+}, allowInsecureHTTP);
+
+var app = express();
+
+// make the Parse Server available at /parse
+app.use('/parse', api);
+
+// make the Parse Dashboard available at /dashboard
+app.use('/dashboard', dashboard);
+
+var httpServer = require('http').createServer(app);
+httpServer.listen(4040);
+```
 
 # Deploying Parse Dashboard
 
@@ -120,9 +211,26 @@ To change the app to production, simply set `production` to `true` in your confi
 Make sure the server URLs for your apps can be accessed by your browser. If you are deploying the dashboard, then `localhost` urls will not work.
 
 ## Security Considerations
-In order to securely deploy the dashboard without leaking your apps master key, you will need to use HTTPS and Basic Authentication. 
+In order to securely deploy the dashboard without leaking your apps master key, you will need to use HTTPS and Basic Authentication.
 
-The deployed dashboard detects if you are using a secure connection. If you are deploying the dashboard behind a load balancer or proxy that does early SSL termination, then the app won't be able to detect that the connection is secure. In this case, you can start the dashboard with the `--allowInsecureHTTP=1` option. You will then be responsible for ensureing that your proxy or load balancer only allows HTTPS.
+The deployed dashboard detects if you are using a secure connection. If you are deploying the dashboard behind a load balancer or front-facing proxy, then the app won't be able to detect that the connection is secure. In this case, you can start the dashboard with the `--trustProxy=1` option (or set the PARSE_DASHBOARD_TRUST_PROXY config var to 1) to rely on the X-Forwarded-* headers for the client's connection security.  This is useful for hosting on services like Heroku, where you can trust the provided proxy headers to correctly determine whether you're using HTTP or HTTPS.  You can also turn on this setting when using the dashboard as [express](https://github.com/expressjs/express) middleware:
+
+```
+var trustProxy = true;
+var dashboard = new ParseDashboard({
+  "apps": [
+    {
+      "serverURL": "http://localhost:1337/parse",
+      "appId": "myAppId",
+      "masterKey": "myMasterKey",
+      "appName": "MyApp"
+    }
+  ],
+  "trustProxy": 1
+});
+```
+
+
 
 ### Configuring Basic Authentication
 You can configure your dashboard for Basic Authentication by adding usernames and passwords your `parse-dashboard-config.json` configuration file:
@@ -139,9 +247,13 @@ You can configure your dashboard for Basic Authentication by adding usernames an
       "user":"user2",
       "pass":"pass"
     }
-  ]
+  ],
+  "useEncryptedPasswords": true | false
 }
 ```
+
+You can store the password in either `plain text` or `bcrypt` formats. To use the `bcrypt` format, you must set the config `useEncryptedPasswords` parameter to `true`.
+You can encrypt the password using any online bcrypt tool e.g. [https://www.bcrypt-generator.com](https://www.bcrypt-generator.com).
 
 ### Separating App Access Based on User Identity
 If you have configured your dashboard to manage multiple applications, you can restrict the management of apps based on user identity.
@@ -155,20 +267,20 @@ To do so, update your `parse-dashboard-config.json` configuration file to match 
      {
        "user":"user1",
        "pass":"pass1",
-       "apps": [{"appId1": "myAppId1"}, {"appId2": "myAppId2"}]
+       "apps": [{"appId": "myAppId1"}, {"appId": "myAppId2"}]
      },
      {
        "user":"user2",
        "pass":"pass2",
-       "apps": [{"appId1": "myAppId1"}]
+       "apps": [{"appId": "myAppId1"}]
      }  ]
 }
 ```
 The effect of such a configuration is as follows:
 
-When `user1` logs in, he/she will be able to manage `appId1` and `appId2` from the dashboard.
+When `user1` logs in, he/she will be able to manage `myAppId1` and `myAppId2` from the dashboard.
 
-When *`user2`*  logs in, he/she will only be able to manage *`appId1`* from the dashboard.
+When *`user2`*  logs in, he/she will only be able to manage *`myAppId1`* from the dashboard.
 
 
 ## Run with Docker
